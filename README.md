@@ -1,4 +1,4 @@
-# Data Cleaning & Deduplication Automation (Python Demo)
+# Data Cleaning & Automation (Python Demo)
 
 **Problem it solves:** Client spreadsheets are often messy — inconsistent
 capitalization, different phone number formats, duplicate entries, and
