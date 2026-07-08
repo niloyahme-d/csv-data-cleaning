@@ -1,6 +1,6 @@
 # Data Cleaner
 
-[![CI](https://github.com/niloyahme-d/csv-data-cleaning/actions/workflows/ci.yml/badge.svg)](https://github.com/niloyahme-d/csv-data-cleaning/actions/workflows/ci.yml)
+[![CI](https://github.com/niloyahme-d/csv-data-cleaning/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/niloyahme-d/csv-data-cleaning/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
@@ -15,6 +15,35 @@ malformed emails, and duplicate records under slightly different spellings.
 This toolkit turns that into a deterministic, testable pipeline rather than a
 one-off script: normalization and validation rules live in a pure, unit-tested
 core module, decoupled from I/O and the CLI layer.
+
+## Who this is for
+
+Any workflow where contact data accumulates from multiple, inconsistent
+sources and needs to be trustworthy before it's used downstream:
+
+- **SMEs migrating to a CRM** (HubSpot, Zoho, Salesforce) from years of
+  manually maintained spreadsheets, where the same company appears under
+  several spellings and phone formats.
+- **Marketing/sales teams merging lead lists** collected from web forms,
+  event sign-ups, and manual entry — where undetected duplicates mean the
+  same contact gets emailed multiple times.
+- **Back-office/data-entry teams** who need to review only the records that
+  actually have a problem, rather than re-checking an entire dataset row by
+  row.
+
+## Scope and limitations
+
+This is intentionally built for a specific data shape, not a universal
+cleaner:
+
+- Phone normalization currently targets Bangladeshi numbers
+  (`+880XXXXXXXXXX`) specifically.
+- The expected input schema is fixed: `Company Name`, `Contact Email`,
+  `Phone`, `City`.
+
+Extending it to other country codes or arbitrary column mappings would be a
+natural next step, but isn't implemented yet — stated here rather than
+implied to work.
 
 ## Features
 
