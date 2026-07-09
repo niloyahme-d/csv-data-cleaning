@@ -11,4 +11,3 @@ dist/
 htmlcov/
 .venv/
 venv/
-*.csv.bak

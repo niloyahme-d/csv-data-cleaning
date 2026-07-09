@@ -2,80 +2,74 @@ from __future__ import annotations
 
 import csv
 from pathlib import Path
+from unittest.mock import patch
 
-from data_cleaner.cli import main
+import requests
 
+from directory_scraper.cli import main
 
-def _write_sample_csv(path: Path) -> None:
-    fieldnames = ["Company Name", "Contact Email", "Phone", "City"]
-    rows = [
-        {
-            "Company Name": "Acme corp",
-            "Contact Email": "a@b.com",
-            "Phone": "01711223344",
-            "City": "dhaka",
-        },
-        {
-            "Company Name": "acme CORP",
-            "Contact Email": "dup@b.com",
-            "Phone": "01711223344",
-            "City": "dhaka",
-        },
-        {
-            "Company Name": "Beta Ltd",
-            "Contact Email": "bad-email",
-            "Phone": "01999999999",
-            "City": "ctg",
-        },
-    ]
-    with open(path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(rows)
+SAMPLE_HTML = """
+<div class="directory-listings">
+  <div class="listing-card">
+    <h2 class="company-name">Acme Corp</h2>
+    <p class="category">Retail</p>
+    <p class="address">123 Main St</p>
+    <span class="phone">+8801711223344</span>
+    <span class="email">contact@acme.com</span>
+  </div>
+  <div class="listing-card">
+    <h2 class="company-name">Beta Ltd</h2>
+    <p class="address">456 Side St</p>
+    <span class="phone">+8801999999999</span>
+    <span class="email">info@beta.com</span>
+  </div>
+</div>
+"""
 
 
 class TestCliMain:
-    def test_successful_run_creates_output_files(self, tmp_path: Path):
-        input_path = tmp_path / "input.csv"
+    def test_successful_run_local_file(self, tmp_path: Path):
+        source = tmp_path / "page.html"
+        source.write_text(SAMPLE_HTML, encoding="utf-8")
         output_dir = tmp_path / "out"
-        _write_sample_csv(input_path)
 
-        exit_code = main(["--input", str(input_path), "--output-dir", str(output_dir), "--quiet"])
+        exit_code = main(["--source", str(source), "--output-dir", str(output_dir), "--quiet"])
 
         assert exit_code == 0
-        assert (output_dir / "cleaned_output.csv").exists()
-        assert (output_dir / "issues_report.csv").exists()
+        clean_csv = output_dir / "scraped_companies.csv"
+        issues_csv = output_dir / "issues_report.csv"
+        assert clean_csv.exists()
+        assert issues_csv.exists()
 
-        with open(output_dir / "cleaned_output.csv", encoding="utf-8") as f:
-            assert len(list(csv.DictReader(f))) == 2  # 3 rows - 1 duplicate
+        with open(clean_csv, encoding="utf-8") as f:
+            assert len(list(csv.DictReader(f))) == 1  # Acme only; Beta missing category
 
-    def test_missing_input_file_returns_error_code(self, tmp_path: Path):
-        missing_path = tmp_path / "does_not_exist.csv"
+        with open(issues_csv, encoding="utf-8") as f:
+            assert len(list(csv.DictReader(f))) == 1  # Beta flagged
+
+    def test_missing_local_source_returns_error_code(self, tmp_path: Path):
+        missing = tmp_path / "does_not_exist.html"
         output_dir = tmp_path / "out"
 
-        exit_code = main(["--input", str(missing_path), "--output-dir", str(output_dir)])
-
-        assert exit_code == 1
-        assert not (output_dir / "cleaned_output.csv").exists()
-
-    def test_malformed_csv_missing_columns_returns_error_code(self, tmp_path: Path):
-        input_path = tmp_path / "bad.csv"
-        output_dir = tmp_path / "out"
-        with open(input_path, "w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=["Company Name", "City"])
-            writer.writeheader()
-            writer.writerow({"Company Name": "Acme", "City": "Dhaka"})
-
-        exit_code = main(["--input", str(input_path), "--output-dir", str(output_dir)])
+        exit_code = main(["--source", str(missing), "--output-dir", str(output_dir)])
 
         assert exit_code == 1
 
-    def test_output_dir_created_if_missing(self, tmp_path: Path):
-        input_path = tmp_path / "input.csv"
-        output_dir = tmp_path / "nested" / "out"
-        _write_sample_csv(input_path)
+    @patch("directory_scraper.cli.fetch_html")
+    def test_fetch_failure_returns_error_code(self, mock_fetch, tmp_path: Path):
+        mock_fetch.side_effect = requests.HTTPError("503 Service Unavailable")
+        output_dir = tmp_path / "out"
 
-        exit_code = main(["--input", str(input_path), "--output-dir", str(output_dir), "--quiet"])
+        exit_code = main(["--source", "https://example.com/page", "--output-dir", str(output_dir)])
+
+        assert exit_code == 1
+
+    def test_no_listing_cards_still_writes_empty_outputs(self, tmp_path: Path):
+        source = tmp_path / "empty.html"
+        source.write_text("<div class='directory-listings'></div>", encoding="utf-8")
+        output_dir = tmp_path / "out"
+
+        exit_code = main(["--source", str(source), "--output-dir", str(output_dir), "--quiet"])
 
         assert exit_code == 0
-        assert output_dir.exists()
+        assert (output_dir / "scraped_companies.csv").exists()

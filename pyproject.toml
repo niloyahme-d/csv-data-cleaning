@@ -3,23 +3,26 @@ requires = ["setuptools>=68.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "data-cleaner"
+name = "directory-scraper"
 version = "1.0.0"
-description = "Clean, validate, and deduplicate contact-list CSV files."
+description = "Extract structured business listings from a directory HTML page (local file or live URL)."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { file = "LICENSE" }
 authors = [{ name = "Niloy Ahmed" }]
-keywords = ["csv", "data-cleaning", "deduplication", "data-validation"]
+keywords = ["web-scraping", "beautifulsoup", "csv", "data-extraction"]
 classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Operating System :: OS Independent",
-    "Topic :: Utilities",
+    "Topic :: Internet :: WWW/HTTP :: Indexing/Search",
 ]
-dependencies = []
+dependencies = [
+    "beautifulsoup4>=4.12,<5.0",
+    "requests>=2.31,<3.0",
+]
 
 [project.optional-dependencies]
 dev = [
@@ -27,16 +30,17 @@ dev = [
     "pytest-cov>=5.0",
     "ruff>=0.5",
     "mypy>=1.10",
+    "types-requests>=2.31",
 ]
 
 [project.scripts]
-clean-data = "data_cleaner.cli:main"
+scrape-directory = "directory_scraper.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.pytest.ini_options]
-addopts = "-ra -q --cov=data_cleaner --cov-report=term-missing"
+addopts = "-ra -q --cov=directory_scraper --cov-report=term-missing"
 testpaths = ["tests"]
 
 [tool.ruff]
