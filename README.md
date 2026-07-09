@@ -1,67 +1,72 @@
-# Directory Scraper
+# Data Cleaner
 
-[![CI](https://github.com/niloyahme-d/business-directory-scraper/actions/workflows/ci.yml/badge.svg)](https://github.com/niloyahme-d/business-directory-scraper/actions/workflows/ci.yml)
+[![CI](https://github.com/niloyahme-d/csv-data-cleaning/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/niloyahme-d/csv-data-cleaning/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
-A fault-tolerant Python toolkit for extracting structured business listings
-(name, category, address, phone, email) from directory-style HTML pages,
-whether from a local file or a live URL.
+A small, well-tested Python toolkit for cleaning, validating, and deduplicating
+contact-list CSV exports (CRM exports, lead lists, scraped datasets).
 
 ## Why this exists
 
-Directory pages are rarely perfectly uniform — a listing card here or there
-is missing a category, or has an empty field. A naive scraper that assumes
-every field is always present will crash on the first inconsistency. This
-toolkit treats that as the normal case: each field is extracted
-independently, and a card with a missing or empty field is flagged for
-review rather than aborting the entire run.
-
-## Features
-
-- Works against a local HTML file or a live URL — same code path either way
-- Per-field fault tolerance: a missing/empty selector on one card doesn't
-  stop parsing of the rest
-- Two output streams: clean, ready-to-use records and a separate report of
-  flagged rows with a reason per field
-- Configurable input source and output location via a proper CLI
-- Centralized CSS selector mapping (`core.FIELD_SELECTORS`) for adapting to
-  a different site's HTML structure
+Raw contact data collected from forms, CRMs, or manual entry is rarely
+consistent — inconsistent casing, mixed phone number formats, missing or
+malformed emails, and duplicate records under slightly different spellings.
+This toolkit turns that into a deterministic, testable pipeline rather than a
+one-off script: normalization and validation rules live in a pure, unit-tested
+core module, decoupled from I/O and the CLI layer.
 
 ## Who this is for
 
-- **Lead generation** — building a contact list from a public business
-  directory instead of copy-pasting each entry by hand.
-- **Market research** — pulling structured listings (competitors, vendors,
-  service providers) from a directory site for analysis.
-- **Anyone automating a repetitive "copy this into a spreadsheet" task**
-  against a directory-style page.
+Any workflow where contact data accumulates from multiple, inconsistent
+sources and needs to be trustworthy before it's used downstream:
 
-## Responsible scraping
+- **SMEs migrating to a CRM** (HubSpot, Zoho, Salesforce) from years of
+  manually maintained spreadsheets, where the same company appears under
+  several spellings and phone formats.
+- **Marketing/sales teams merging lead lists** collected from web forms,
+  event sign-ups, and manual entry — where undetected duplicates mean the
+  same contact gets emailed multiple times.
+- **Back-office/data-entry teams** who need to review only the records that
+  actually have a problem, rather than re-checking an entire dataset row by
+  row.
 
-This tool fetches whatever page it's pointed at — using it responsibly is
-the operator's responsibility, not something the code enforces for you:
+## Scope and limitations
 
-- Check the target site's `robots.txt` and Terms of Service before scraping it.
-- Add delays between requests if scraping multiple pages; don't hammer a
-  server with rapid, repeated requests.
-- Only collect data you have a legitimate right to use, and respect any
-  usage restrictions the site publishes.
-- Prefer a site's official API if one is available.
+This is intentionally built for a specific data shape, not a universal
+cleaner:
+
+- Phone normalization currently targets Bangladeshi numbers
+  (`+880XXXXXXXXXX`) specifically.
+- The expected input schema is fixed: `Company Name`, `Contact Email`,
+  `Phone`, `City`.
+
+Extending it to other country codes or arbitrary column mappings would be a
+natural next step, but isn't implemented yet — stated here rather than
+implied to work.
+
+## Features
+
+- Whitespace trimming and Title Case normalization for names/cities
+- Phone number normalization to a single canonical format (`+880XXXXXXXXXX`)
+- Email format validation
+- Case-insensitive duplicate detection on (company name, phone)
+- Two output streams: clean, ready-to-use records and a separate report of
+  flagged rows for human review
+- Configurable input/output paths via a proper CLI (no hardcoded file paths)
 
 ## Project structure
 
 ```
-business-directory-scraper/
-├── src/directory_scraper/
-│   ├── core.py   # pure parsing/fetch logic, per-field fault tolerance
-│   └── cli.py     # thin CLI wrapper (argparse + logging)
+csv-data-cleaning/
+├── src/data_cleaner/
+│   ├── core.py        # pure business logic: normalization, validation, dedup
+│   └── cli.py          # thin CLI wrapper (argparse + logging)
 ├── tests/
-│   ├── test_core.py
-│   └── test_cli.py
+│   └── test_core.py    # unit + end-to-end tests (pytest)
 ├── sample_data/
-│   └── sample_directory.html
-├── .github/workflows/ci.yml
+│   └── messy_sample.csv
+├── .github/workflows/ci.yml   # lint + type-check + test on every push
 ├── pyproject.toml
 └── LICENSE
 ```
@@ -69,76 +74,55 @@ business-directory-scraper/
 ## Installation
 
 ```bash
-git clone https://github.com/niloyahme-d/business-directory-scraper.git
-cd business-directory-scraper
+git clone https://github.com/niloyahme-d/csv-data-cleaning.git
+cd csv-data-cleaning
 pip install -e ".[dev]"
 ```
 
 ## Usage
 
-Against a local HTML file:
-
 ```bash
-scrape-directory --source sample_data/sample_directory.html --output-dir output/
-```
-
-Against a live URL:
-
-```bash
-scrape-directory --source https://example-directory.com/listings --output-dir output/
+clean-data --input sample_data/messy_sample.csv --output-dir output/
 ```
 
 This writes two files to `output/`:
 
-- `scraped_companies.csv` — records where every field was found
-- `issues_report.csv` — records with a missing/empty field, and which
-  field(s) triggered the flag
+- `cleaned_output.csv` — validated, deduplicated, ready-to-use records
+- `issues_report.csv` — rows flagged for manual review, with a reason per row
 
-Run `scrape-directory --help` for all options.
-
-## Adapting to a different site
-
-Update the selector mapping in `src/directory_scraper/core.py`:
-
-```python
-FIELD_SELECTORS = {
-    "company_name": ".company-name",
-    "category": ".category",
-    "address": ".address",
-    "phone": ".phone",
-    "email": ".email",
-}
-LISTING_CARD_SELECTOR = ".listing-card"
-```
-
-Open the target page's dev tools, inspect a listing card, and update these
-selectors to match. No other code changes are needed.
+Run `clean-data --help` for all options.
 
 ## Development
 
+Run the test suite (with coverage):
+
 ```bash
-pytest              # run tests with coverage
-ruff check .         # lint
-mypy src             # type-check
+pytest
+```
+
+Lint and type-check:
+
+```bash
+ruff check .
+mypy src
 ```
 
 All three run automatically on every push via GitHub Actions.
 
-## Scope and limitations
+## Design notes
 
-- Selectors are configured for one page structure at a time — scraping
-  multiple differently-structured sites requires maintaining separate
-  selector mappings or extending the config to support per-source profiles.
-- No built-in rate limiting or pagination handling; both would be
-  straightforward additions for large-scale or multi-page scraping.
-- JavaScript-rendered pages (content loaded client-side) aren't supported —
-  this fetches raw HTML only, so a headless browser (e.g. Playwright) would
-  be needed for such sites.
+- **Core logic is I/O-free.** `core.py` operates on plain dicts and dataclasses
+  in, dataclasses out — no file handles are opened inside the cleaning
+  functions. This is what makes every rule (phone normalization, email
+  validation, dedup key logic) testable in isolation without touching disk.
+- **Dataclasses over dicts for results.** `CleanedRecord` and `CleaningResult`
+  give typed, self-documenting structures instead of passing loosely-shaped
+  dictionaries between functions.
+- **Deduplication key.** Records are deduplicated on
+  `(company_name.lower(), normalized_phone)` rather than raw string equality,
+  since the same company frequently appears with different casing/spacing
+  across data sources.
 
 ## License
 
 MIT — see [LICENSE](LICENSE).
-
----
-**Connect:**
-- LinkedIn: [YOUR_LINKEDIN_URL]

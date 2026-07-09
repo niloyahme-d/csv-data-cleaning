@@ -1,197 +1,269 @@
 from __future__ import annotations
 
+import csv
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
-import requests
 
-from directory_scraper.core import (
-    ListingRecord,
-    clean_text,
-    fetch_html,
-    is_url,
-    parse_listings,
+from data_cleaner.core import (
+    CleanedRecord,
+    clean_row,
+    deduplicate,
+    is_valid_email,
+    load_rows,
+    normalize_phone,
+    run_cleaning,
+    validate_columns,
     write_clean_csv,
     write_issues_csv,
 )
 
-VALID_HTML = """
-<div class="directory-listings">
-  <div class="listing-card">
-    <h2 class="company-name">Acme Corp</h2>
-    <p class="category">Retail</p>
-    <p class="address">123 Main St, Dhaka</p>
-    <span class="phone">+8801711223344</span>
-    <span class="email">contact@acme.com</span>
-  </div>
-</div>
-"""
-
-MISSING_FIELD_HTML = """
-<div class="directory-listings">
-  <div class="listing-card">
-    <h2 class="company-name">Beta Ltd</h2>
-    <p class="address">456 Side St, Chittagong</p>
-    <span class="phone">+8801999999999</span>
-    <span class="email">info@beta.com</span>
-  </div>
-</div>
-"""
-
-EMPTY_FIELD_HTML = """
-<div class="directory-listings">
-  <div class="listing-card">
-    <h2 class="company-name">Gamma Inc</h2>
-    <p class="category"></p>
-    <p class="address">789 Third St, Sylhet</p>
-    <span class="phone">+8801888888888</span>
-    <span class="email">hi@gamma.com</span>
-  </div>
-</div>
-"""
-
-NO_CARDS_HTML = "<div class='directory-listings'></div>"
-
-
 # ---------------------------------------------------------------------------
-# clean_text
+# normalize_phone
 # ---------------------------------------------------------------------------
 
 
-class TestCleanText:
-    def test_collapses_whitespace(self):
-        assert clean_text("  hello   world  \n") == "hello world"
+class TestNormalizePhone:
+    def test_local_format_with_leading_zero(self):
+        assert normalize_phone("01711223344") == "+8801711223344"
+
+    def test_already_has_country_code(self):
+        assert normalize_phone("+8801711223344") == "+8801711223344"
+
+    def test_country_code_no_plus(self):
+        assert normalize_phone("8801711223344") == "+8801711223344"
+
+    def test_spaces_and_dashes(self):
+        assert normalize_phone("01711-223 344") == "+8801711223344"
+
+    def test_parentheses_format(self):
+        assert normalize_phone("(880) 1711-223344") == "+8801711223344"
 
     def test_none_input(self):
-        assert clean_text(None) == ""
+        assert normalize_phone(None) is None
 
     def test_empty_string(self):
-        assert clean_text("") == ""
+        assert normalize_phone("") is None
+
+    def test_too_short(self):
+        assert normalize_phone("12345") is None
+
+    def test_too_long(self):
+        assert normalize_phone("017112233445566") is None
+
+    def test_non_numeric_garbage(self):
+        assert normalize_phone("call-me-maybe") is None
+
+    def test_multiple_leading_zeros(self):
+        assert normalize_phone("001711223344") == "+8801711223344"
 
 
 # ---------------------------------------------------------------------------
-# is_url
+# is_valid_email
 # ---------------------------------------------------------------------------
 
 
-class TestIsUrl:
-    @pytest.mark.parametrize("value", ["http://example.com", "https://example.com/page"])
-    def test_recognizes_urls(self, value):
-        assert is_url(value) is True
+class TestIsValidEmail:
+    @pytest.mark.parametrize(
+        "email",
+        [
+            "user@example.com",
+            "first.last@sub.example.co",
+            "a@b.co",
+        ],
+    )
+    def test_valid_emails(self, email):
+        assert is_valid_email(email) is True
 
     @pytest.mark.parametrize(
-        "value", ["sample.html", "/home/user/page.html", "C:\\data\\page.html"]
+        "email",
+        [
+            "",
+            "no-at-symbol.com",
+            "missing-domain@",
+            "@missing-local.com",
+            "spaces in@email.com",
+            "double@@at.com",
+        ],
     )
-    def test_recognizes_local_paths(self, value):
-        assert is_url(value) is False
+    def test_invalid_emails(self, email):
+        assert is_valid_email(email) is False
 
 
 # ---------------------------------------------------------------------------
-# parse_listings — the critical fault-tolerance behavior
+# clean_row
 # ---------------------------------------------------------------------------
 
 
-class TestParseListings:
-    def test_valid_card_parses_cleanly(self):
-        result = parse_listings(VALID_HTML)
-        assert result.total_cards_found == 1
-        assert len(result.valid_records) == 1
-        assert len(result.flagged_records) == 0
-        record = result.valid_records[0]
+class TestCleanRow:
+    def test_casing_and_whitespace_normalized(self):
+        row = {
+            "Company Name": "  aCme corp  ",
+            "Contact Email": "  USER@EXAMPLE.COM  ",
+            "Phone": "01711223344",
+            "City": " dhaka ",
+        }
+        record = clean_row(row)
         assert record.company_name == "Acme Corp"
-        assert record.email == "contact@acme.com"
+        assert record.contact_email == "user@example.com"
+        assert record.city == "Dhaka"
+        assert record.phone == "+8801711223344"
+        assert record.is_valid
 
-    def test_missing_selector_does_not_crash(self):
-        """
-        This is the core regression test: the original script called
-        `.get_text()` directly on `select_one(...)`, which raises
-        AttributeError when the element is absent (None). A single
-        malformed card must not abort the whole parse.
-        """
-        result = parse_listings(MISSING_FIELD_HTML)
-        assert result.total_cards_found == 1
-        assert len(result.flagged_records) == 1
-        assert len(result.valid_records) == 0
-        flagged = result.flagged_records[0]
-        assert "missing category" in flagged.issues
-        assert flagged.company_name == "Beta Ltd"  # other fields still extracted
+    def test_flags_missing_email(self):
+        row = {"Company Name": "Acme", "Contact Email": "", "Phone": "01711223344", "City": "Dhaka"}
+        record = clean_row(row)
+        assert not record.is_valid
+        assert "missing/invalid email" in record.issues
 
-    def test_empty_element_is_flagged(self):
-        result = parse_listings(EMPTY_FIELD_HTML)
-        assert len(result.flagged_records) == 1
-        assert "empty category" in result.flagged_records[0].issues
+    def test_flags_invalid_phone(self):
+        row = {"Company Name": "Acme", "Contact Email": "a@b.com", "Phone": "123", "City": "Dhaka"}
+        record = clean_row(row)
+        assert not record.is_valid
+        assert "missing/invalid phone" in record.issues
 
-    def test_no_cards_found_returns_empty_result(self):
-        result = parse_listings(NO_CARDS_HTML)
-        assert result.total_cards_found == 0
-        assert result.valid_records == []
-        assert result.flagged_records == []
+    def test_flags_both_issues(self):
+        row = {"Company Name": "Acme", "Contact Email": "bad-email", "Phone": "", "City": "Dhaka"}
+        record = clean_row(row)
+        assert set(record.issues) == {"missing/invalid email", "missing/invalid phone"}
 
-    def test_mixed_valid_and_invalid_cards(self):
-        html = VALID_HTML + MISSING_FIELD_HTML
-        result = parse_listings(html)
-        assert result.total_cards_found == 2
-        assert len(result.valid_records) == 1
-        assert len(result.flagged_records) == 1
+    def test_missing_keys_do_not_raise(self):
+        # Simulates a malformed row missing an expected column entirely.
+        row = {"Company Name": "Acme"}
+        record = clean_row(row)
+        assert not record.is_valid
 
 
 # ---------------------------------------------------------------------------
-# fetch_html
+# deduplicate
 # ---------------------------------------------------------------------------
 
 
-class TestFetchHtml:
-    def test_reads_local_file(self, tmp_path: Path):
-        file_path = tmp_path / "page.html"
-        file_path.write_text(VALID_HTML, encoding="utf-8")
-        assert fetch_html(str(file_path)) == VALID_HTML
-
-    def test_missing_local_file_raises(self, tmp_path: Path):
-        missing = tmp_path / "does_not_exist.html"
-        with pytest.raises(FileNotFoundError):
-            fetch_html(str(missing))
-
-    @patch("directory_scraper.core.requests.get")
-    def test_fetches_live_url(self, mock_get):
-        mock_response = mock_get.return_value
-        mock_response.text = VALID_HTML
-        mock_response.raise_for_status.return_value = None
-
-        result = fetch_html("https://example.com/directory")
-
-        assert result == VALID_HTML
-        mock_get.assert_called_once()
-
-    @patch("directory_scraper.core.requests.get")
-    def test_http_error_propagates(self, mock_get):
-        mock_get.return_value.raise_for_status.side_effect = requests.HTTPError("404")
-        with pytest.raises(requests.HTTPError):
-            fetch_html("https://example.com/missing-page")
-
-
-# ---------------------------------------------------------------------------
-# CSV writers
-# ---------------------------------------------------------------------------
-
-
-class TestCsvWriters:
-    def test_write_clean_csv(self, tmp_path: Path):
+class TestDeduplicate:
+    def test_removes_case_insensitive_duplicates(self):
         records = [
-            ListingRecord("Acme", "Retail", "123 St", "+880171", "a@b.com"),
+            CleanedRecord("Acme Corp", "a@b.com", "+8801711223344", "Dhaka"),
+            CleanedRecord("acme corp", "a2@b.com", "+8801711223344", "Dhaka"),
         ]
-        out = tmp_path / "clean.csv"
-        write_clean_csv(records, out)
-        content = out.read_text(encoding="utf-8")
-        assert "Acme" in content
-        assert "Company Name" in content
+        unique, dup_count = deduplicate(records)
+        assert len(unique) == 1
+        assert dup_count == 1
 
-    def test_write_issues_csv_includes_issue_column(self, tmp_path: Path):
+    def test_keeps_first_occurrence(self):
         records = [
-            ListingRecord("Beta", "", "456 St", "+880199", "b@c.com", issues=["missing category"]),
+            CleanedRecord("Acme Corp", "first@b.com", "+8801711223344", "Dhaka"),
+            CleanedRecord("Acme Corp", "second@b.com", "+8801711223344", "Dhaka"),
         ]
-        out = tmp_path / "issues.csv"
-        write_issues_csv(records, out)
-        content = out.read_text(encoding="utf-8")
-        assert "_issues" in content
-        assert "missing category" in content
+        unique, _ = deduplicate(records)
+        assert unique[0].contact_email == "first@b.com"
+
+    def test_different_phone_not_a_duplicate(self):
+        records = [
+            CleanedRecord("Acme Corp", "a@b.com", "+8801711223344", "Dhaka"),
+            CleanedRecord("Acme Corp", "a@b.com", "+8801999999999", "Dhaka"),
+        ]
+        unique, dup_count = deduplicate(records)
+        assert len(unique) == 2
+        assert dup_count == 0
+
+    def test_no_duplicates(self):
+        records = [
+            CleanedRecord("Acme", "a@b.com", "+8801711223344", "Dhaka"),
+            CleanedRecord("Beta", "b@c.com", "+8801999999999", "Ctg"),
+        ]
+        unique, dup_count = deduplicate(records)
+        assert len(unique) == 2
+        assert dup_count == 0
+
+
+# ---------------------------------------------------------------------------
+# validate_columns
+# ---------------------------------------------------------------------------
+
+
+class TestValidateColumns:
+    def test_valid_header(self):
+        validate_columns(["Company Name", "Contact Email", "Phone", "City"])  # no raise
+
+    def test_none_header_raises(self):
+        with pytest.raises(ValueError, match="no header row"):
+            validate_columns(None)
+
+    def test_missing_column_raises(self):
+        with pytest.raises(ValueError, match="Phone"):
+            validate_columns(["Company Name", "Contact Email", "City"])
+
+
+# ---------------------------------------------------------------------------
+# End-to-end pipeline (I/O), using tmp_path fixture
+# ---------------------------------------------------------------------------
+
+
+class TestRunCleaningEndToEnd:
+    @staticmethod
+    def _write_csv(path: Path, rows: list[dict[str, str]]) -> None:
+        fieldnames = ["Company Name", "Contact Email", "Phone", "City"]
+        with open(path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(rows)
+
+    def test_full_pipeline(self, tmp_path: Path):
+        input_path = tmp_path / "input.csv"
+        self._write_csv(
+            input_path,
+            [
+                {
+                    "Company Name": "Acme corp",
+                    "Contact Email": "a@b.com",
+                    "Phone": "01711223344",
+                    "City": "dhaka",
+                },
+                {
+                    "Company Name": "acme CORP",
+                    "Contact Email": "dup@b.com",
+                    "Phone": "01711223344",
+                    "City": "dhaka",
+                },
+                {
+                    "Company Name": "Beta Ltd",
+                    "Contact Email": "bad-email",
+                    "Phone": "01999999999",
+                    "City": "ctg",
+                },
+                {
+                    "Company Name": "Gamma Inc",
+                    "Contact Email": "g@h.com",
+                    "Phone": "",
+                    "City": "khulna",
+                },
+            ],
+        )
+
+        result = run_cleaning(input_path)
+
+        assert result.total_input_rows == 4
+        assert result.duplicate_count == 1
+        assert len(result.clean_records) == 3
+        assert len(result.flagged_records) == 2
+
+        clean_out = tmp_path / "cleaned_output.csv"
+        issues_out = tmp_path / "issues_report.csv"
+        write_clean_csv(result.clean_records, clean_out)
+        write_issues_csv(result.flagged_records, issues_out)
+
+        assert clean_out.exists()
+        assert issues_out.exists()
+
+        with open(clean_out, encoding="utf-8") as f:
+            assert len(list(csv.DictReader(f))) == 3
+
+    def test_missing_required_column_raises(self, tmp_path: Path):
+        input_path = tmp_path / "bad.csv"
+        with open(input_path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=["Company Name", "City"])
+            writer.writeheader()
+            writer.writerow({"Company Name": "Acme", "City": "Dhaka"})
+
+        with pytest.raises(ValueError):
+            load_rows(input_path)
